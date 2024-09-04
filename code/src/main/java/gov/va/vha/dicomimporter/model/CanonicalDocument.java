@@ -91,6 +91,21 @@ public class CanonicalDocument {
         return bodyIsBase64Encoded;
     }
 
+    @Override
+    public String toString() {
+        return "CanonicalDocument{" +
+                "identifier='" + identifier + '\'' +
+                ", revision=" + revision +
+                ", name='" + name + '\'' +
+                ", description='" + description + '\'' +
+                ", contentType='" + contentType + '\'' +
+                ", contentLength=" + contentLength +
+                ", body='" + (body == null ? "null" : "not null") + '\'' +
+                ", bodyStream=" + (bodyStream == null ? "null" : "not null") +
+                ", bodyIsBase64Encoded=" + bodyIsBase64Encoded +
+                "}";
+    }
+
     public static Builder builder() {
         return new Builder();
     }

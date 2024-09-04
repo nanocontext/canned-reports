@@ -79,6 +79,22 @@ public class CanonicalRequest {
         return bodyIsBase64Encoded;
     }
 
+    @Override
+    public String toString() {
+        return "CanonicalRequest{" +
+                "method='" + method + '\'' +
+                ", identifier='" + identifier + '\'' +
+                ", revisionSpecification=" + revisionSpecification +
+                ", name='" + name + '\'' +
+                ", description='" + description + '\'' +
+                ", contentType='" + contentType + '\'' +
+                ", contentLength=" + contentLength +
+                ", authorization='" + authorization + '\'' +
+                ", body=" + (body == null ? "null" : "not null") +
+                ", bodyIsBase64Encoded=" + bodyIsBase64Encoded +
+                '}';
+    }
+
     public static Builder builder() {
         return new Builder();
     }

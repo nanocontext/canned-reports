@@ -18,6 +18,8 @@ import gov.va.vha.dicomimporter.exceptions.*;
 import gov.va.vha.dicomimporter.model.CanonicalDocument;
 import gov.va.vha.dicomimporter.model.CanonicalRequest;
 import gov.va.vha.dicomimporter.model.CanonicalResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Implementation of the capabilities for Canned Report management and availability.
@@ -46,6 +48,8 @@ public class CannedReportsManager {
     private final String userRoleName;
     private final String managerRoleName;
 
+    private final Logger logger = LoggerFactory.getLogger(CannedReportsManager.class);
+
     /**
      * Constructor for typical production usage
      * @param s3BucketName
@@ -60,6 +64,8 @@ public class CannedReportsManager {
      * @param s3BucketName
      */
     protected CannedReportsManager(final AmazonS3 amazonS3, final String s3BucketName) {
+        logger.info("CannedReportsManager({}, {})", amazonS3, s3BucketName);
+
         if (StringUtils.isNullOrEmpty(s3BucketName))
             throw new InvalidParameterException("'s3BucketName' must not be null or empty");
         if (amazonS3 == null)
@@ -72,9 +78,10 @@ public class CannedReportsManager {
                 .filter(bucket -> s3BucketName.equals(bucket.getName()))
                 .findFirst()
                 .orElse(null);
-        if (amazonS3Bucket == null)
+        if (amazonS3Bucket == null) {
             amazonS3Bucket = amazonS3.createBucket(s3BucketName);
-
+            logger.info("created Bucket({})", amazonS3Bucket);
+        }
         authorizationCheckingEnabled = Boolean.valueOf(
                 ApplicationProperties.getSingleton().getProperty(PROPERTY_ENABLE_AUTHORIZATION, "false")
         );
@@ -82,6 +89,9 @@ public class CannedReportsManager {
                 .getProperty(PROPERTY_AUTHORIZATION_USER_ROLE, DEFAULT_REPORT_USER);
         managerRoleName = ApplicationProperties.getSingleton()
                 .getProperty(PROPERTY_AUTHORIZATION_MANAGER_ROLE, DEFAULT_REPORT_MANAGER);
+
+        logger.info("authorizationCheckingEnabled = [{}], userRoleName = [{}], managerRoleName = [{}]",
+                authorizationCheckingEnabled, userRoleName, managerRoleName);
     }
 
     /**
@@ -119,6 +129,7 @@ public class CannedReportsManager {
      * "-1" means retrieve the most recent revision before the current version
      */
     protected CanonicalResponse handleRequest(final CanonicalRequest canonicalRequest) throws ParseException {
+        logger.info("handleRequest({})", canonicalRequest);
         CanonicalResponse response = null;
 
         final List<String> roles = extractRolesFromAuthorization(canonicalRequest.getAuthorization());
@@ -135,6 +146,7 @@ public class CannedReportsManager {
                                 canonicalRequest.getBody(), canonicalRequest.isBodyIsBase64Encoded()
                         );
                     }
+                    logger.info("handleRequest({}) POST returning [{}]", canonicalRequest, response);
                     break;
 
                 case "PUT":
@@ -147,6 +159,7 @@ public class CannedReportsManager {
                                 canonicalRequest.getBody(), canonicalRequest.isBodyIsBase64Encoded()
                         );
                     }
+                    logger.info("handleRequest({}) PUT returning [{}]", canonicalRequest, response);
                     break;
 
                 case "GET":
@@ -155,6 +168,7 @@ public class CannedReportsManager {
                     } else {
                         response = handleGet(canonicalRequest.getIdentifier(), canonicalRequest.getRevisionSpecification());
                     }
+                    logger.info("handleRequest({}) GET returning [{}]", canonicalRequest, response);
                     break;
 
                 case "DELETE":
@@ -163,6 +177,7 @@ public class CannedReportsManager {
                     } else {
                         response = handleDelete(canonicalRequest.getIdentifier(), canonicalRequest.getRevisionSpecification());
                     }
+                    logger.info("handleRequest({}) DELETE returning [{}]", canonicalRequest, response);
                     break;
 
                 case "HEAD":
@@ -171,10 +186,12 @@ public class CannedReportsManager {
                     } else {
                         response = handleHead(canonicalRequest.getIdentifier(), canonicalRequest.getRevisionSpecification());
                     }
+                    logger.info("handleRequest({}) HEAD returning [{}]", canonicalRequest, response);
                     break;
             }
         } catch (AbstractApplicationDefinedException aadfX) {
             response = createExceptionResponse(aadfX);
+            logger.info("handleRequest({}) caught exception [{}]", canonicalRequest, aadfX);
         }
         return response;
     }
@@ -310,12 +327,15 @@ public class CannedReportsManager {
     protected CanonicalResponse handleGet(String identifier, RevisionSpecification revisionSpecification)
         throws AbstractClientException, AbstractServiceException
     {
-        if (identifier != null && identifier.length() > 0)
+        logger.info("handleGet({}, {})", identifier, revisionSpecification);
+
+        if (identifier != null && identifier.length() > 0) {
             // get a single document requested by specifying the key
             return handleGetDocument(identifier, revisionSpecification);
-        else
+        } else {
             // get the metadata of all of the documents
             return handleGetAllDocumentsMetadata();
+        }
     }
 
     /**
@@ -399,11 +419,17 @@ public class CannedReportsManager {
     protected CanonicalResponse handleGetDocument(String identifier, RevisionSpecification revisionSpecification)
             throws AbstractClientException, AbstractServiceException
     {
+        logger.info("handleGetDocument({}, {})", identifier, revisionSpecification);
+
         try {
+            logger.debug("handleGetDocument({}, {}) getting document metadata", identifier, revisionSpecification);
             ObjectMetadata documentMetadata = amazonS3.getObjectMetadata(this.s3BucketName, identifier);
             if (documentMetadata != null) {
+                logger.debug("handleGetDocument({}, {}) document metadata retrieved, getting object", identifier, revisionSpecification);
+
                 S3Object s3Object = amazonS3.getObject(this.s3BucketName, identifier);
                 if (s3Object != null) {
+                    logger.debug("handleGetDocument({}, {}) object retrieved, building response", identifier, revisionSpecification);
                     CanonicalDocument canonicalDocument = CanonicalDocument.builder()
                             .withIdentifier(identifier)
                             .withObjectMetadata(documentMetadata)
@@ -436,11 +462,15 @@ public class CannedReportsManager {
     protected CanonicalResponse handleGetAllDocumentsMetadata()
             throws AbstractClientException, AbstractServiceException
     {
+        logger.info("handleGetAllDocumentsMetadata()");
+
         // assume Success
         CanonicalResponse.Builder resultBuilder = CanonicalResponse.builder().success();
         try {
             ListObjectsV2Request listObjectsV2Request = new ListObjectsV2Request();
             listObjectsV2Request.setBucketName(this.s3BucketName);
+
+            logger.debug("handleGetAllDocumentsMetadata(), calling listObjectsV2({})", listObjectsV2Request);
             ListObjectsV2Result objects = amazonS3.listObjectsV2(listObjectsV2Request);
 
             if (objects.getObjectSummaries() != null) {
@@ -459,6 +489,7 @@ public class CannedReportsManager {
                                 .build()
                         )
                         .forEach(canonicalDocument -> {
+                            logger.debug("handleGetAllDocumentsMetadata(), adding ({}) to result", canonicalDocument);
                             resultBuilder.addDocument(canonicalDocument);
                         });
             }

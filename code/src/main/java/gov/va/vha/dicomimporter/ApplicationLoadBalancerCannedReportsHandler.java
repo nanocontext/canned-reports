@@ -1,7 +1,6 @@
 package gov.va.vha.dicomimporter;
 
 import com.amazonaws.services.lambda.runtime.Context;
-import com.amazonaws.services.lambda.runtime.LambdaLogger;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.ApplicationLoadBalancerRequestEvent;
 import com.amazonaws.services.lambda.runtime.events.ApplicationLoadBalancerResponseEvent;
@@ -18,13 +17,12 @@ import gov.va.vha.dicomimporter.model.CanonicalRequest;
 import gov.va.vha.dicomimporter.model.CanonicalResponse;
 import org.apache.http.HttpHeaders;
 import org.apache.http.HttpStatus;
-import org.apache.http.client.methods.HttpHead;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.UnsupportedEncodingException;
 import java.text.ParseException;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -33,6 +31,7 @@ public class ApplicationLoadBalancerCannedReportsHandler
 {
     private final static String DEFAULT_BUCKET_NAME = "canned-reports";
     private final CannedReportsManager cannedReportsManager;
+    private final Logger logger = LoggerFactory.getLogger(ApplicationLoadBalancerCannedReportsHandler.class);
 
     /**
      * The required (by Lambda framework) no-args constructor.
@@ -73,7 +72,7 @@ public class ApplicationLoadBalancerCannedReportsHandler
      * "[-][1-9][0-9]*"
      * examples:
      * "0" means retrieve the oldest available revision
-     * "2" means retrieve the third oldest revision
+     * "2" means retrieve the third-oldest revision
      * "-1" means retrieve the most recent revision before the current revision
      * "-0" means retrieve the most recent revision
      *
@@ -86,12 +85,13 @@ public class ApplicationLoadBalancerCannedReportsHandler
             final ApplicationLoadBalancerRequestEvent event,
             final Context context)
     {
-        LambdaLogger logger = context.getLogger();
-        logger.log("EVENT TYPE: " + event.getClass());
+        logger.info("ApplicationLoadBalancerResponseEvent handleRequest({}, {})", event, context);
 
         try {
             CanonicalRequest canonicalRequest = parse(event);
+            logger.debug("canonicalRequest is ({})", canonicalRequest);
             CanonicalResponse canonicalResponse = cannedReportsManager.handleRequest(canonicalRequest);
+            logger.debug("canonicalResponse is ({})", canonicalResponse);
             return createResponse(canonicalRequest, canonicalResponse);
         } catch (AbstractClientException acX) {
             return createClientErrorResponse(acX);
@@ -139,11 +139,14 @@ public class ApplicationLoadBalancerCannedReportsHandler
     private ApplicationLoadBalancerResponseEvent createResponse(
             final CanonicalRequest canonicalRequest,
             final CanonicalResponse canonicalResponse) throws IOException {
+        logger.info("createResponse({}, {})", canonicalRequest, canonicalResponse);
+
         ApplicationLoadBalancerResponseEvent response = new ApplicationLoadBalancerResponseEvent();
 
         // default the status code and description, method specific handling may override these values
         response.setStatusCode(canonicalResponse.getResult().getHttpResponseCode());
         response.setStatusDescription(canonicalResponse.getResult().getHttpResponseDescription());
+        logger.info("createResponse(...), (partial) response is [{}]", response);
 
         Map<String, String> headers = new HashMap<>();
         // the request method informs the format of the response
@@ -162,19 +165,26 @@ public class ApplicationLoadBalancerCannedReportsHandler
                 response.setHeaders(headers);
                 break;
             case "GET":
-                if (canonicalResponse.getReports().size() == 1) {
-                    CanonicalDocument getDocument = canonicalResponse.getReports().get(0);
+                if (canonicalRequest.getIdentifier() != null && !canonicalRequest.getIdentifier().isEmpty()) {
+                    if (canonicalResponse.getReports().size() == 0) {
+                        headers.put(CannedReportsManager.HTTP_HEADER_REPORT_IDENTIFIER, canonicalRequest.getIdentifier());
+                        response.setHeaders(headers);
+                        response.setStatusCode(HttpStatus.SC_NOT_FOUND);
+                        response.setStatusDescription("NOT FOUND");
+                    } else {
+                        CanonicalDocument getDocument = canonicalResponse.getReports().get(0);
 
-                    headers.put(CannedReportsManager.HTTP_HEADER_REPORT_NAME, getDocument.getName());
-                    headers.put(CannedReportsManager.HTTP_HEADER_REPORT_DESCRIPTION, getDocument.getDescription());
-                    headers.put(CannedReportsManager.HTTP_HEADER_REPORT_IDENTIFIER, getDocument.getIdentifier());
-                    if (getDocument.getRevision() != null)
-                        headers.put(CannedReportsManager.HTTP_HEADER_REPORT_REVISION, getDocument.getRevision().toString());
-                    headers.put(HttpHeaders.CONTENT_TYPE, getDocument.getContentType());
-                    headers.put(HttpHeaders.CONTENT_LENGTH, getDocument.getContentLength().toString());
-                    response.setHeaders(headers);
-                    response.setBody(getDocument.getBody());
-                } else if (canonicalResponse.getReports().size() > 1) {
+                        headers.put(CannedReportsManager.HTTP_HEADER_REPORT_NAME, getDocument.getName());
+                        headers.put(CannedReportsManager.HTTP_HEADER_REPORT_DESCRIPTION, getDocument.getDescription());
+                        headers.put(CannedReportsManager.HTTP_HEADER_REPORT_IDENTIFIER, getDocument.getIdentifier());
+                        if (getDocument.getRevision() != null)
+                            headers.put(CannedReportsManager.HTTP_HEADER_REPORT_REVISION, getDocument.getRevision().toString());
+                        headers.put(HttpHeaders.CONTENT_TYPE, getDocument.getContentType());
+                        headers.put(HttpHeaders.CONTENT_LENGTH, getDocument.getContentLength().toString());
+                        response.setHeaders(headers);
+                        response.setBody(getDocument.getBody());
+                    }
+                } else {
                     // if there is more than one document then the response is formatted as a JSON document
                     // for MVP, this implies that there is no document body in the documents within the CanonicalResponse
                     // because the GET request to populate the dropdown (i.e. just need the identifier, name, and description)
@@ -189,16 +199,12 @@ public class ApplicationLoadBalancerCannedReportsHandler
                     } catch (JsonProcessingException jpX) {
                         response = createServerErrorResponse(new WrappedServiceException("Unable to serialize document descriptions", jpX));
                     }
-
-                } else {
-                    headers.put(CannedReportsManager.HTTP_HEADER_REPORT_IDENTIFIER, canonicalRequest.getIdentifier());
-                    response.setHeaders(headers);
-                    response.setStatusCode(HttpStatus.SC_NOT_FOUND);
-                    response.setStatusDescription("NOT FOUND");
                 }
+
                 break;
         }
 
+        logger.info("createResponse(...), returning response [{}]", response);
         return response;
     }
 

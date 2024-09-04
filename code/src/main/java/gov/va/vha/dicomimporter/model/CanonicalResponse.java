@@ -60,6 +60,15 @@ public class CanonicalResponse {
         }
     }
 
+    @Override
+    public String toString() {
+        return "CanonicalResponse{" +
+                "result=" + result +
+                ", exception=" + exception +
+                ", reports=" + (reports == null || reports.size()==0 ? 0 : reports.size()) +
+                '}';
+    }
+
     public static Builder builder() {
         return new Builder();
     }
