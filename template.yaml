@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  spi_api_gw
+
+Parameters:
+  stage:
+    Description: Name of the APIs stage, note that this is also the "environment"
+    Type: String
+
+  ResourceSuffix:
+    Description: The suffix to append to resource names that are unique to an environment
+    Type: String
+
+  # NOTE: the account ID in which the ALB service runs, these are AWS accounts that are specific
+  # to the AWS region in which the ALB is deployed. Should be one of:
+  #   AWS GovCloud (US-West) – 048591011584
+  #   AWS GovCloud (US-East) – 190560391635
+  #   US East (N. Virginia) – 127311923021
+  #   US East (Ohio) – 033677994240
+  #   US West (N. California) – 027434742980
+  #   US West (Oregon) – 797873946194
+  AlbServiceRoleAccount:
+    Description: The AWS Account ID in which the ALB is deployed
+    Type: String
+
+  subnets:
+    Description: Subnets to assign to the Load Balancer
+    Type: CommaDelimitedList
+
+  networkInterfaceSubnet:
+    Description: The subnet to use for the ELB Network Interface
+    Type: String
+
+  LogLevel:
+    Description: setting for the log level of the functions
+    Type: String
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARNING
+      - ERROR
+      - CRITICAL
+
+  ALBVisibility:
+    Description: The desired visibility of the Application Load Balancer
+    Type: String
+    Default: internal
+    AllowedValues:
+      - internet-facing
+      - internal
+
+  ARNScheme:
+    Description: The scheme for the ARN values, 'aws' for Commercial AWS, 'aws-us-gov' for GovCloud
+    Type: String
+    Default: 'aws-us-gov'
+    AllowedValues:
+      - 'aws'
+      - 'aws-us-gov'
+
+  VPC:
+    Description: The VPC in which the ALB resides
+    Type: String
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+    Runtime: python3.11
+    Tags:
+      Environment: !Ref stage
+    Environment:
+      Variables:
+        LOG_LEVEL: !Ref LogLevel
+
+    Tracing: Active
+    # You can add LoggingConfig parameters such as the Logformat, Log Group, and SystemLogLevel or ApplicationLogLevel. Learn more here https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-loggingconfig.
+    # LoggingConfig:
+    #   LogFormat: JSON
+    #   ApplicationLogLevel: DEBUG
+  Api:
+    TracingEnabled: true
+    Cors: # see CORS section
+      AllowOrigin: "'*'"
+      AllowHeaders: "'Content-Type,Authorization,X-Amz-Date'"
+      MaxAge: "'300'"
+    BinaryMediaTypes: # see Binary responses section
+      - "*~1*" # converts to */* for any binary type
+      # NOTE: use this stricter version if you're also using CORS; */* doesn't work with CORS
+      # see: https://github.com/aws-powertools/powertools-lambda-python/issues/3373#issuecomment-1821144779
+      # - "image~1*" # converts to image/*
+      # - "*~1csv" # converts to */csv, eg text/csv, application/csv
+
+Resources:
+  # ========================================================================================================
+  # S3 Buckets
+  # ========================================================================================================
+  # Application Load Balancer log
+  LoadBalancerLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "cies-cr-loadbalancerlog-${ResourceSuffix}"
+      VersioningConfiguration:
+        Status: Suspended
+      Tags:
+        - Key: "Stack"
+          Value: !Sub "${AWS::StackName}"
+        - Key: "Instance"
+          Value: !Sub "${ResourceSuffix}"
+
+  # The presence of s3:ListBucket changes the behavior of the headObject operation.
+  # With the s3:ListBucket permission the headObject operation will return a 404(not found) when the given key does not exist.
+  # Without the s3:ListBucket permission the headObject operation will return a 403(forbidden) when the given key does not exist,
+  # which may make sense from a strict security perspective but it makes it impossible to tell if a key exists or not.
+  # NOTE: the account ID in the Principal reference is one of:
+  #   AWS GovCloud (US-West) – 048591011584
+  #   AWS GovCloud (US-East) – 190560391635
+  LoadBalancerLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoadBalancerLogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${ARNScheme}:iam::${AlbServiceRoleAccount}:root"
+            Action:
+              - 's3:ListBucket'
+              - 's3:GetBucketLocation'
+            # Resource: !Ref LoadBalancerLogBucket
+            # Resource: !GetAtt LoadBalancerLogBucket.Arn
+            Resource: !Sub "arn:${ARNScheme}:s3:::cies-cr-loadbalancerlog-${ResourceSuffix}"
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${ARNScheme}:iam::${AlbServiceRoleAccount}:root"
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+            # Resource: !Ref LoadBalancerLogBucket
+            Resource: !Sub "arn:${ARNScheme}:s3:::cies-cr-loadbalancerlog-${ResourceSuffix}/*"
+
+  # The S3 Bucket where canned reports are stored
+  CRBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "project-cr-bucket-${ResourceSuffix}"
+      VersioningConfiguration:
+        Status: "Enabled"
+      Tags:
+        - Key: "Stack"
+          Value: !Sub "${AWS::StackName}"
+        - Key: "Instance"
+          Value: !Sub "${ResourceSuffix}"
+
+  # ========================================================================================================
+  # The Load Balancer that fronts the Lambda function
+  # ========================================================================================================
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "project-cr-sg-${ResourceSuffix}"
+      GroupDescription: "The security group for the Canned Reports Application Load Balancer"
+      VpcId: !Sub "${VPC}"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 10400
+          ToPort: 10400
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+  ALBNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      GroupSet:
+        - !GetAtt ALBSecurityGroup.GroupId
+      SubnetId: !Ref networkInterfaceSubnet
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: LoadBalancerLogBucketPolicy
+    Properties:
+      Type: "application"
+      IpAddressType: ipv4
+      Name: !Sub "project-cr-${ResourceSuffix}"
+      Scheme: !Sub "${ALBVisibility}"
+      Subnets: !Ref subnets
+      SecurityGroups:
+        - !GetAtt ALBSecurityGroup.GroupId
+      # See https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticloadbalancingv2-loadbalancer-loadbalancerattribute.html
+      LoadBalancerAttributes:
+        - Key: "deletion_protection.enabled"
+          Value: "false"
+        - Key: "idle_timeout.timeout_seconds"
+          Value: 60
+        - Key: "client_keep_alive.seconds"
+          Value: 3600
+        - Key: "routing.http.preserve_host_header.enabled"
+          Value: "true"
+        - Key: "load_balancing.cross_zone.enabled"
+          Value: "true"
+        - Key: "access_logs.s3.enabled"
+          Value: "true"
+        - Key: "access_logs.s3.bucket"
+          Value: !Ref LoadBalancerLogBucket
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: 400
+            ContentType: "text/plain"
+            MessageBody: "Bad Request, not mapped by the listener"
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+
+  # ========================================================================================================
+  # Canned Report Lambda
+  # ========================================================================================================
+  CRFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      # Do not change this FunctionName without changing the SourceArn of the associated AWS::Lambda::Permission
+      FunctionName: !Sub "project-cr-${ResourceSuffix}"
+      Handler: gov.va.vha.dicomimporter.ApplicationLoadBalancerCannedReportsHandler::handleRequest
+      CodeUri: code
+      Description: POST, PUT, HEAD, GET and DELETE of canned reports
+      Role: !Sub "arn:${ARNScheme}:iam::${AWS::AccountId}:role/project-ocr-cr-role-status-function-${stage}"
+      Tracing: Active
+      Timeout: 30
+      Runtime: java11
+      Architectures:
+        - x86_64
+      MemorySize: 2048
+      Environment:
+        Variables:
+          SOURCE_BUCKET : !Sub "project-cr-bucket-${ResourceSuffix}"
+  # Allow the Elastic Load Balancer to invoke the Canned Report Lambda
+  CRFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CRFunction.Arn
+      Principal: elasticloadbalancing.amazonaws.com
+      # SourceArn: !Ref DocumentFunctionTargetGroup
+      # arn:aws:lambda:us-east-1:665192190124:function:project-cies-doc-dev-1
+      # arn:aws:elasticloadbalancing:us-east-1:665192190124:targetgroup/doc-dev-1/f9b949762207e8a7
+      SourceArn: !Sub "arn:${ARNScheme}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/cr-${ResourceSuffix}/*"
+  CRFunctionTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    # The AWS::Lambda::Permission MUST be created before this AWS::ElasticLoadBalancingV2::TargetGroup, else the TargetGroup creation will fail,
+    # which also means that the SourceArn of the Permission cannot simply reference the Target Group ARN
+    DependsOn: CRFunctionPermission
+    Properties:
+      # The Name is referenced in the AWS::Lambda::Permission as part of the SourceArn, these must be kept in synch
+      Name: !Sub "cr-${ResourceSuffix}"
+      IpAddressType: ipv4
+      TargetType: lambda
+      Targets:
+        - Id: !GetAtt CRFunction.Arn
+      HealthCheckEnabled: false
+      Tags:
+        - Key: "project"
+          Value: "Canned-Report"
+        - Key: "environment"
+          Value: !Sub "${stage}"
+  CRFunctionListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref CRFunctionTargetGroup
+      Conditions:
+        - Field: http-request-method
+          HttpRequestMethodConfig:
+            Values:
+              - POST
+              - PUT
+              - HEAD
+              - GET
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - "/*"
+      ListenerArn: !Ref ALBListener
+      Priority: 3
+
+Outputs:
+  CRFunction:
+    Description: The Canned Rerport Lambda Function
+    Value: !GetAtt CRFunction.Arn
+  CRApplicationLoadBalancer:
+    Description: Application Load Balancer ARN
+    Value: !GetAtt ALB.LoadBalancerArn
+  CRApplicationLoadBalancerDNS:
+    Description: Application Load Balancer DNS Name
+    Value: !GetAtt ALB.DNSName
