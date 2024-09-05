@@ -2,6 +2,7 @@ package gov.va.vha.dicomimporter.model;
 
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.util.StringInputStream;
+import gov.va.vha.dicomimporter.CannedReportsManager;
 import gov.va.vha.dicomimporter.exceptions.InstanceValidationException;
 
 import java.io.IOException;
@@ -9,9 +10,6 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.UnsupportedEncodingException;
 import java.util.Arrays;
-
-import static gov.va.vha.dicomimporter.CannedReportsManager.S3_METADATA_REPORT_DESCRIPTION;
-import static gov.va.vha.dicomimporter.CannedReportsManager.S3_METADATA_REPORT_NAME;
 
 public class CanonicalDocument {
     final String identifier;
@@ -125,8 +123,8 @@ public class CanonicalDocument {
         }
 
         public Builder withObjectMetadata(ObjectMetadata objectMetadata) {
-            this.name = objectMetadata.getUserMetaDataOf(S3_METADATA_REPORT_NAME);
-            this.description = objectMetadata.getUserMetaDataOf(S3_METADATA_REPORT_DESCRIPTION);
+            this.name = objectMetadata.getUserMetaDataOf(CannedReportsManager.HTTP_HEADER_REPORT_NAME);
+            this.description = objectMetadata.getUserMetaDataOf(CannedReportsManager.HTTP_HEADER_REPORT_DESCRIPTION);
             this.contentLength = (int) objectMetadata.getContentLength();
             this.contentType = objectMetadata.getContentType();
             return this;

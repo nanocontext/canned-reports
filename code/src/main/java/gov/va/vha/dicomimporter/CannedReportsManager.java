@@ -39,8 +39,7 @@ public class CannedReportsManager {
     public static final String HTTP_HEADER_REPORT_IDENTIFIER = "report-identifier";
     public static final String HTTP_HEADER_REPORT_REVISION = "report-revision";
 
-    public static final String S3_METADATA_REPORT_NAME = "x-amz-meta-report-name";
-    public static final String S3_METADATA_REPORT_DESCRIPTION = "x-amz-meta-report-description";
+    public static final String S3_METADATA_PREFIX = "x-amz-meta-";
 
     private final AmazonS3 amazonS3;
     private final String s3BucketName;
@@ -275,8 +274,9 @@ public class CannedReportsManager {
     {
         try {
             ObjectMetadata objectMetadata = new ObjectMetadata();
-            objectMetadata.addUserMetadata(S3_METADATA_REPORT_NAME, name);
-            objectMetadata.addUserMetadata(S3_METADATA_REPORT_DESCRIPTION, description);
+            // S3 will prefix user metadata with "x-amz-meta-"
+            objectMetadata.addUserMetadata(HTTP_HEADER_REPORT_NAME, name);
+            objectMetadata.addUserMetadata(HTTP_HEADER_REPORT_DESCRIPTION, description);
             // A sorta' hacky way to save the content type when it is transmitted as base64,
             // which, BTW, simply should not be done.
             if (contentType != null)
@@ -289,23 +289,33 @@ public class CannedReportsManager {
 
             PutObjectResult result = amazonS3.putObject(s3BucketName, identifier, body, objectMetadata);
 
+            CanonicalResponse.Builder canonicalResponseBuilder = CanonicalResponse.builder();
             if (result != null) {
-                CanonicalDocument.Builder responseBuilder = CanonicalDocument.builder()
+                // read the metadata back to get the type and length according to S3
+                ObjectMetadata s3Metadata = amazonS3.getObjectMetadata(s3BucketName, identifier);
+                CanonicalDocument.Builder canonicalDocumentBuilder = CanonicalDocument.builder()
                         .withIdentifier(identifier)
                         .withRevision(0);
-                Optional<ObjectMetadata> optionalResultMetadata = Optional.ofNullable(result.getMetadata());
-                optionalResultMetadata.ifPresent(metadata -> {
-                    responseBuilder.withContentType(metadata.getContentType());
-                    responseBuilder.withContentLength((int)metadata.getContentLength());
-                    responseBuilder.withName(metadata.getUserMetaDataOf(S3_METADATA_REPORT_NAME));
-                    responseBuilder.withDescription(metadata.getUserMetaDataOf(S3_METADATA_REPORT_DESCRIPTION));
-                });
+                if (s3Metadata != null) {
+                    logger.debug("metadata from S3 contentType is {}", s3Metadata.getContentType());
+                    canonicalDocumentBuilder.withContentType(s3Metadata.getContentType());
 
-                return CanonicalResponse.builder()
-                        .successWithJSONBody(responseBuilder.build())
+                    logger.debug("metadata from S3 contentLength is {}", s3Metadata.getContentLength());
+                    canonicalDocumentBuilder.withContentLength((int)s3Metadata.getContentLength());
+
+                    logger.debug("metadata from S3 S3_METADATA_REPORT_NAME is {}", s3Metadata.getUserMetaDataOf(HTTP_HEADER_REPORT_NAME));
+                    canonicalDocumentBuilder.withName(s3Metadata.getUserMetaDataOf(HTTP_HEADER_REPORT_NAME));
+
+                    logger.debug("metadata from S3 HTTP_HEADER_REPORT_DESCRIPTION is {}", s3Metadata.getUserMetaDataOf(HTTP_HEADER_REPORT_DESCRIPTION));
+                    canonicalDocumentBuilder.withDescription(s3Metadata.getUserMetaDataOf(HTTP_HEADER_REPORT_DESCRIPTION));
+                }
+
+                return canonicalResponseBuilder
+                        .success()
+                        .addDocument(canonicalDocumentBuilder.build())
                         .build();
             } else {
-                return CanonicalResponse.builder()
+                return canonicalResponseBuilder
                         .serviceException(new WrappedServiceException("putObject response was null", null))
                         .build();
             }
@@ -482,8 +492,8 @@ public class CannedReportsManager {
                         )
                         .map(keyAndMetadata -> CanonicalDocument.builder()
                                 .withIdentifier(keyAndMetadata.getKey())
-                                .withName(keyAndMetadata.getMetadata().getUserMetaDataOf(S3_METADATA_REPORT_NAME))
-                                .withDescription(keyAndMetadata.getMetadata().getUserMetaDataOf(S3_METADATA_REPORT_DESCRIPTION))
+                                .withName(keyAndMetadata.getMetadata().getUserMetaDataOf(HTTP_HEADER_REPORT_NAME))
+                                .withDescription(keyAndMetadata.getMetadata().getUserMetaDataOf(HTTP_HEADER_REPORT_DESCRIPTION))
                                 .withContentLength((int) keyAndMetadata.getMetadata().getContentLength())
                                 .withContentType(keyAndMetadata.getMetadata().getContentType())
                                 .build()

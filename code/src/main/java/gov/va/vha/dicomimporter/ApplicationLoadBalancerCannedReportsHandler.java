@@ -102,7 +102,7 @@ public class ApplicationLoadBalancerCannedReportsHandler
         }
     }
 
-    private CanonicalRequest parse(ApplicationLoadBalancerRequestEvent event)
+    CanonicalRequest parse(ApplicationLoadBalancerRequestEvent event)
             throws AbstractClientException {
         // the full path may include:
         // / - the root e.g. "/"
@@ -111,8 +111,17 @@ public class ApplicationLoadBalancerCannedReportsHandler
         CanonicalRequest.Builder builder = CanonicalRequest.builder();
         builder.withMethod(event.getHttpMethod());
 
-        final String path = event.getPath();
-        final String[] pathElements = path.split("/");
+        // get the path elements, the possible paths (that this code expects) are like:
+        // null, "/", "/identifier" and "/identifier/revision"
+        // where the path is null or "/" (the root) then the identifier and revision are null
+        String path = event.getPath();
+        if (path != null && path.startsWith("/"))
+            path = path.substring(1);
+        final String[] pathElements = (
+                path == null
+                        ? new String[0]
+                        : path.split("/")
+        );
 
         if (pathElements.length > 0)
             builder.withIdentifier(pathElements[0]);
@@ -121,13 +130,15 @@ public class ApplicationLoadBalancerCannedReportsHandler
 
         // grab all the headers we may be interested in
         final Map<String, String> headers = event.getHeaders();
-        builder.withName(headers.get(CannedReportsManager.HTTP_HEADER_REPORT_NAME));
-        builder.withDescription(headers.get(CannedReportsManager.HTTP_HEADER_REPORT_DESCRIPTION));
-        builder.withContentType(headers.get(HttpHeaders.CONTENT_TYPE));
-        builder.withContentLength(headers.get(HttpHeaders.CONTENT_LENGTH) != null ? Integer.valueOf(headers.get(HttpHeaders.CONTENT_LENGTH)) : null);
-        builder.withAuthorization(headers.get(HttpHeaders.AUTHORIZATION));
+        if (headers != null) {
+            builder.withName(headers.get(CannedReportsManager.HTTP_HEADER_REPORT_NAME));
+            builder.withDescription(headers.get(CannedReportsManager.HTTP_HEADER_REPORT_DESCRIPTION));
+            builder.withContentType(headers.get(HttpHeaders.CONTENT_TYPE));
+            builder.withContentLength(headers.get(HttpHeaders.CONTENT_LENGTH) != null ? Integer.valueOf(headers.get(HttpHeaders.CONTENT_LENGTH)) : null);
+            builder.withAuthorization(headers.get(HttpHeaders.AUTHORIZATION));
+        }
         try {
-            builder.withBody(new StringInputStream(event.getBody()));
+            builder.withBody(event.getBody() == null ? null : new StringInputStream(event.getBody()));
         } catch (UnsupportedEncodingException e) {
             throw new BodyEncodingException();
         }
@@ -157,6 +168,7 @@ public class ApplicationLoadBalancerCannedReportsHandler
             case "HEAD":
                 // POST, PUT, DELETE and HEAD can work on only one document and have no body
                 CanonicalDocument document = canonicalResponse.getReports().get(0);
+                logger.debug("Body-less response using document {}", document);
                 headers.put(CannedReportsManager.HTTP_HEADER_REPORT_NAME, document.getName());
                 headers.put(CannedReportsManager.HTTP_HEADER_REPORT_DESCRIPTION, document.getDescription());
                 headers.put(CannedReportsManager.HTTP_HEADER_REPORT_IDENTIFIER, document.getIdentifier());

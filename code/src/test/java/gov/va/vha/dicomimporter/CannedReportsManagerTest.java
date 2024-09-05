@@ -266,8 +266,8 @@ public class CannedReportsManagerTest {
             ObjectMetadata objectMetadata = new ObjectMetadata();
             objectMetadata.setContentType("text/plain");
             objectMetadata.setContentLength(objectContent.length());
-            objectMetadata.addUserMetadata(CannedReportsManager.S3_METADATA_REPORT_NAME, "REPORT_" + identifier);
-            objectMetadata.addUserMetadata(CannedReportsManager.S3_METADATA_REPORT_DESCRIPTION, "DESCRIPTION_" + identifier);
+            objectMetadata.addUserMetadata(CannedReportsManager.HTTP_HEADER_REPORT_NAME, "REPORT_" + identifier);
+            objectMetadata.addUserMetadata(CannedReportsManager.HTTP_HEADER_REPORT_DESCRIPTION, "DESCRIPTION_" + identifier);
             Mockito.when(amazonS3Mock.getObjectMetadata(mockBucketName, identifier)).thenReturn(objectMetadata);
 
             // create the Object and mock its result from amazonS3Mock
